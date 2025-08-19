@@ -1,45 +1,48 @@
-HelperAI MCQ Ensemble (Local, LAN-accessible)
-=============================================
+HelperAI MCQ Ensemble (Local + Offline, LAN-accessible)
+======================================================
 
-A FastAPI web app that answers multiple-choice questions using multiple local AI models. It supports:
+A FastAPI web app to answer multiple-choice questions using multiple local AI models via Ollama. It is optimized for single-correct MCQs (4 options), supports image-based questions, runs fully offline after setup, and is controllable from your phone over LAN.
 
-- Text MCQs (English) with 2–12 options
-- Image MCQs via OCR + a vision-language model (VLM)
-- Majority vote across models with a concise two-line explanation
-- Desktop UI and a mobile-friendly upload page over your local network (LAN)
-- Optional auto-run after 10 seconds for image inputs
+Key capabilities
+----------------
 
-This project runs fully offline after models are downloaded (via Ollama).
+- Phase-based ensemble (2+1):
+  - Phase 1 (always-loaded duo): `qwen2.5-vl:7b-instruct`, `llama3.2-vision:11b-instruct`
+  - Phase 2 (on-demand tie-breaker): `qwen2.5-math:7b-instruct`
+  - Typical latency: 7–9 s (Phase 1 agrees); 12–15 s with tie-breaker
+- Image pipeline with text-first optimization:
+  - Optional watermark removal (OpenCV) emphasizing dark text, suppressing gray watermarks
+  - OCR (PaddleOCR) parses question/options
+  - Text-first switch: if OCR is good, answer with text model(s) first; otherwise fall back to VLMs
+- Single-correct and multi-answer support:
+  - Single-correct is default and fastest
+  - Multi-answer toggle on mobile for questions that require multiple letters (e.g., "A+C")
+- Freeform Q&A (no options)
+- Mobile UI with toggles:
+  - Multiple correct, Remove watermark, Text-first, 15 s auto-refresh
+  - Parsed question/options auto-filled from OCR; correct options highlighted in green
+- Runtime controls & LAN access:
+  - `/config`, `/status`, `/warm_math`, `/unload_math`
+  - Mobile page at `/mobile` and QR shortcut at `/qr`
 
-Features
---------
+Tech stack
+----------
 
-- 3-model ensemble:
-  - Text route: Qwen2, Llama 3, Mistral (default; can be changed)
-  - Image route: two text models + one VLM (LLaVA)
-- Majority vote aggregation with two-line explanation
-- OCR via PaddleOCR for parsing text from images
-- Mobile upload page at `/mobile` and QR shortcut at `/qr`
-- JSON APIs for automation
-- Freeform mode (no options) via `/api/answer_freeform`
-- Runtime configuration endpoints (`/config`, `/status`, `/warm_math`, `/unload_math`)
+- Backend: FastAPI, Uvicorn, Pydantic
+- Inference: Ollama (local) for VLMs and text models
+- OCR: PaddleOCR (PaddlePaddle)
+- Preprocessing: OpenCV (opencv-python-headless), NumPy, Pillow
+- Client: Vanilla HTML/JS (mobile-friendly), no external CDNs
 
-Models (current defaults)
--------------------------
+Hardware target & models
+------------------------
 
-- Primary duo (Phase 1): `qwen2.5-vl:7b-instruct`, `llama3.2-vision:11b-instruct`
-- Tie-breaker (Phase 2): `qwen2.5-math:7b-instruct`
-
-Notes:
-- Recommended quantizations (RAM-friendly CPU): Qwen2.5‑VL 7B Q4_K_M (~5 GB), Llama 3.2 Vision 11B Q3_K_M (~5 GB), Qwen2.5‑Math 7B Q4_K_M (~7 GB)
-- Peak RAM fits within ~17–18 GB when tie-breaker is warmed; normal steady state ~10 GB (Phase 1 duo loaded)
-
-Requirements
-------------
-
-- Windows 10/11 (tested), Python 3.10+
-- Ollama installed and running (`http://127.0.0.1:11434`)
-- CPU-only works; GPU (if available) will accelerate
+- Laptop: i9 CPU, 32 GB RAM, Intel Iris Xe (no dGPU)
+- RAM plan: ~10 GB steady (Phase 1 duo), peak ~17 GB when tie-breaker runs
+- Recommended quantizations:
+  - Qwen2.5‑VL 7B Q4_K_M (~5 GB)
+  - Llama 3.2 Vision 11B Q3_K_M (~5 GB)
+  - Qwen2.5‑Math 7B Q4_K_M (~7 GB)
 
 Installation
 ------------
@@ -51,10 +54,9 @@ cd HelperAI
 
 2) Install and pull models (Ollama)
 ```powershell
-ollama pull qwen2:7b
-ollama pull llama3:8b
-ollama pull mistral:7b
-ollama pull llava:7b
+ollama pull qwen2.5-vl:7b-instruct
+ollama pull llama3.2-vision:11b-instruct
+ollama pull qwen2.5-math:7b-instruct
 ```
 
 3) Create a virtual environment and install Python deps
@@ -79,38 +81,42 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 If Windows Firewall prompts, allow access so your phone can connect.
 
-Usage
------
+Usage (Desktop)
+---------------
 
-### Desktop UI
 - Text MCQ: enter question and options (2–12). Click “Get Answer”.
-- Image MCQ: select an image. If you don’t click Upload, the app auto-runs OCR+VLM after 10 seconds.
+- Freeform: use the "Freeform Question (no options)" section for a short answer + two-line explanation.
 
-### Freeform (no options)
-- In the desktop UI, use the "Freeform Question (no options)" section to ask a question without options. A local model returns a short answer and two-line explanation.
+Usage (Mobile)
+--------------
 
-### Mobile UI
-- Visit `/mobile` on your phone (same Wi‑Fi), pick an image, tap Submit. The result shows parsed question/options (if OCR succeeds) and the final result.
+- Visit `/mobile` on your phone (same Wi‑Fi), pick an image, set toggles, tap Submit.
+- Toggles:
+  - Multiple correct: enable when the question expects multiple answers
+  - Remove watermark: cleans gray backgrounds/watermarks before OCR (adds ~150–350 ms)
+  - Text-first: for screenshots with mostly text (faster, often more accurate for single-correct)
+- UI behavior:
+  - Parsed question/options auto-fill from OCR
+  - Correct options are highlighted in green on result
+  - "Thinking…" appears while tie-breaker runs; optional 15 s auto-refresh updates results
 
-### APIs
+APIs
+----
+
 - Text MCQ
 ```bash
 curl -X POST http://<server-ip>:8000/api/answer_text \
   -H "Content-Type: application/json" \
   -d '{"question":"What is 2+2?","options":["1","2","3","4"]}'
 ```
-Response shape:
-```json
-{
-  "final_answer": "D",
-  "explanation": "Two short lines...",
-  "votes": {"A":0, "B":0, "C":0, "D":3},
-  "per_model": [
-    {"model_name":"qwen2:7b","answer":"D","explanation":"...","confidence":0.8},
-    {"model_name":"llama3:8b","answer":"D","explanation":"...","confidence":0.7},
-    {"model_name":"mistral:7b","answer":"D","explanation":"...","confidence":0.6}
-  ]
-}
+
+- Image MCQ (with toggles)
+```bash
+curl -X POST http://<server-ip>:8000/api/answer_image \
+  -F image=@/path/to/screenshot.jpg \
+  -F multi=false \
+  -F remove_watermark=true \
+  -F text_first=true
 ```
 
 - Freeform (no options)
@@ -119,43 +125,22 @@ curl -X POST http://<server-ip>:8000/api/answer_freeform \
   -H "Content-Type: application/json" \
   -d '{"question":"What is the derivative of x^2?"}'
 ```
-Response shape:
-```json
-{
-  "final_answer": "2x",
-  "explanation": "Short two-line rationale...",
-  "confidence": 0.78,
-  "model": "qwen2:7b"
-}
-```
 
 Runtime configuration
 ---------------------
 
-- Get current config
+- Get config
 ```bash
 curl http://<server-ip>:8000/config
 ```
 - Update config (examples)
 ```bash
-# Switch to single-model mode (first primary only)
-curl -X POST http://<server-ip>:8000/config \
-  -H "Content-Type: application/json" \
-  -d '{"mode":"single"}'
-
+# Switch to single-model mode
+curl -X POST http://<server-ip>:8000/config -H "Content-Type: application/json" -d '{"mode":"single"}'
 # Switch back to duo
-curl -X POST http://<server-ip>:8000/config \
-  -H "Content-Type: application/json" \
-  -d '{"mode":"duo"}'
-
-# Swap primary order
-curl -s http://<server-ip>:8000/config | jq '.primary | reverse as $p | {primary:$p}' \
-| curl -X POST http://<server-ip>:8000/config -H "Content-Type: application/json" -d @-
-
+curl -X POST http://<server-ip>:8000/config -H "Content-Type: application/json" -d '{"mode":"duo"}'
 # Force next call to include tie-breaker (one-off)
-curl -X POST http://<server-ip>:8000/config \
-  -H "Content-Type: application/json" \
-  -d '{"force_tiebreaker": true}'
+curl -X POST http://<server-ip>:8000/config -H "Content-Type: application/json" -d '{"force_tiebreaker": true}'
 ```
 
 Warm/unload/status
@@ -164,39 +149,29 @@ Warm/unload/status
 ```bash
 # Preload tie-breaker into memory
 curl -X POST http://<server-ip>:8000/warm_math
-
-# Hint unload (actual eviction occurs under memory pressure)
+# Hint unload (eviction happens under memory pressure)
 curl -X POST http://<server-ip>:8000/unload_math
-
 # Memory + config status
 curl http://<server-ip>:8000/status
 ```
 
-- Image MCQ
-```bash
-curl -X POST http://<server-ip>:8000/api/answer_image -F image=@/path/to/screenshot.jpg
-```
-Response shape:
-```json
-{
-  "question": "Parsed question (if OCR succeeds)",
-  "options": ["A text","B text","C text","D text"],
-  "result": { "final_answer":"B", "explanation":"...", "votes":{...}, "per_model":[...] }
-}
-```
+Performance notes
+-----------------
 
-Notes & Tips
-------------
+- Dominant case (single-correct, 4 options): 7–9 s end-to-end (Phase 1 agrees)
+- Tie-breaker path: 12–15 s
+- Watermark removal preproc: +0.15–0.35 s, but can improve OCR and overall accuracy
+- Text-first (images): saves ~0.5–1.5 s on clean text screenshots
 
-- CPU-only performance is fine for short MCQs. Larger models or images take longer.
-- If PaddleOCR install fails on Windows, you can switch to Tesseract:
-  - Install Tesseract and `pip install pytesseract`
-  - Replace the OCR implementation in `app/ocr.py` accordingly
-- To change models, edit model tags in `app/models.py` where defaults are listed, or extend the app to read from a config.
+Troubleshooting
+---------------
+
+- PaddleOCR install: if issues, try `pip install paddlepaddle==2.6.1` (CPU) or switch to Tesseract (edit `app/ocr.py`).
+- Ollama models: ensure tags exist locally (`ollama list`). If tags differ, update `app/config.py` accordingly.
+- LAN access: allow Uvicorn through Windows Firewall; use your local IP for the phone.
 
 License
 -------
 
 Local use with open models; check individual model licenses for redistribution/commercial use.
-
 

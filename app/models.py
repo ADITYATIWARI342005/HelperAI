@@ -13,47 +13,60 @@ from .config import get_config, update_config
 OLLAMA_URL = "http://127.0.0.1:11434"
 
 
+OLLAMA_GEN_OPTIONS = {
+	"temperature": 0.2,
+	"top_p": 0.9,
+	"top_k": 40,
+	"repeat_penalty": 1.1,
+	"num_predict": 160,
+}
+
+
 def _build_text_prompt(question: str, options: List[str], allow_multi: bool = False) -> str:
 	letters = [chr(ord("A") + i) for i in range(len(options))]
 	options_block = "\n".join(f"{letters[i]}. {opt}" for i, opt in enumerate(options))
-	if allow_multi:
-		return (
-			"You are an expert test-solver. Read the MCQ and answer strictly in JSON.\n"
-			"If the question allows multiple correct answers, return all correct letters joined by '+' (e.g., 'A+C'), otherwise return a single letter.\n"
-			"Return only: {\\"answer\\": \\\"B\\\" or \\\"A+C\\\", \\"explanation\\": \\"two short lines\\", \\"confidence\\": 0-1}.\n"
-			"Choose ONLY from the provided options by letter. Do not invent options.\n\n"
-			f"Question: {question}\n\nOptions:\n{options_block}\n\n"
-		)
-	else:
-		return (
-			"You are an expert test-solver. Read the MCQ and answer strictly in JSON.\n"
-			"Return only a single JSON object with keys: answer (letter), explanation (2 short lines max), confidence (0 to 1).\n"
-			"Choose ONLY from the provided options by letter. Do not invent options.\n\n"
-			f"Question: {question}\n\nOptions:\n{options_block}\n\n"
-			"Output JSON example: {\\"answer\\": \\\"B\\\", \\"explanation\\": \\"...\\", \\"confidence\\": 0.72}"
-		)
+	selection_rule = (
+		"If multiple answers are correct, return all correct letters joined by '+' (e.g., 'A+C'); otherwise return a single letter."
+		if allow_multi
+		else "Return exactly one letter."
+	)
+	return (
+		"You are an expert MCQ solver for mathematics, programming, and complex reasoning."
+		" Solve carefully but reply ONLY with a strict JSON object. Reason internally and do not reveal steps.\n"
+		f"{selection_rule}\n"
+		"Rules:\n"
+		"- Consider each option and eliminate clearly wrong ones.\n"
+		"- Use definitions, formulas, and quick calculations when needed.\n"
+		"- Choose ONLY from the provided options by letter; do not invent options.\n"
+		"- Calibrate confidence between 0 and 1 (higher = more certain).\n\n"
+		f"Question: {question}\n\nOptions:\n{options_block}\n\n"
+		"Return exactly one line of JSON with keys: answer, explanation, confidence."
+	)
 
 
 def _build_vlm_prompt(question: Optional[str], options: Optional[List[str]], allow_multi: bool = False) -> str:
+	selection_rule = (
+		"If multiple answers are correct, return all correct letters joined by '+' (e.g., 'A+C'); otherwise return a single letter."
+		if allow_multi
+		else "Return exactly one letter."
+	)
 	base = (
-		"You are given a screenshot that may contain a multiple-choice question."
-		" Determine the best answer and reply strictly in JSON as:"
-		(
-			" {\\"answer\\": \\\"A\\\" or \\\"A+C\\\", \\"explanation\\": \\"two short lines\\", \\"confidence\\": 0.0-1.0}."
-			if allow_multi
-			else " {\\"answer\\": \\\"A\\\", \\"explanation\\": \\"two short lines\\", \\"confidence\\": 0.0-1.0}."
-		)
+		"You are a vision-language expert for MCQs. Reply ONLY with a strict JSON object."
+		" Reason internally; do not reveal steps.\n"
+		"Ignore logos/watermarks; focus on dark, high-contrast text and highlighted areas.\n"
+		f"{selection_rule}\n"
+		"Return keys: answer, explanation (2 short lines), confidence (0-1)."
 	)
 	if question and options:
 		letters = [chr(ord("A") + i) for i in range(len(options))]
 		options_block = "\n".join(f"{letters[i]}. {opt}" for i, opt in enumerate(options))
 		return (
 			base
-			+ "\nFocus on this question and options if present in the image.\n"
+			+ "\nIf the text below conflicts with the image, prefer the image.\n"
 			+ f"Question (if visible): {question}\nOptions:\n{options_block}\n"
-			+ "Choose only one letter from the provided options."
+			+ "Choose ONLY from the provided options by letter."
 		)
-	return base + " If options are visible, choose by letter."
+	return base + " If options are visible in the image, choose by letter."
 
 
 def _parse_json_from_text(text: str) -> Optional[dict]:
@@ -74,23 +87,9 @@ def _parse_json_from_text(text: str) -> Optional[dict]:
 
 
 def _normalize_answer_letter(letter: str, num_options: int) -> str:
-def _normalize_answer_multi_string(value, num_options: int) -> str:
-	# Accept list or string with separators, return canonical 'A+C+E' (sorted unique)
-	if isinstance(value, list):
-		candidates = [str(v) for v in value]
-	else:
-		candidates = re.split(r"[,+/\\| ]+", str(value))
-	letters = []
-	for v in candidates:
-		v = v.strip()
-		if not v:
-			continue
-		letters.append(_normalize_answer_letter(v, num_options))
-	uniq_sorted = sorted(set(letters))
-	return "+".join(uniq_sorted) if uniq_sorted else "A"
 	if not letter:
 		return "A"
-	letter = letter.strip().upper()
+	letter = str(letter).strip().upper()
 	# Accept forms like "(A)", "A.", "A)"
 	letter = re.sub(r"[^A-Z]", "", letter)
 	if not letter:
@@ -102,6 +101,22 @@ def _normalize_answer_multi_string(value, num_options: int) -> str:
 	return letter
 
 
+def _normalize_answer_multi_string(value, num_options: int) -> str:
+	# Accept list or string with separators, return canonical 'A+C+E' (sorted unique)
+	if isinstance(value, list):
+		candidates = [str(v) for v in value]
+	else:
+		candidates = re.split(r"[,+/\\| ]+", str(value))
+	letters: List[str] = []
+	for v in candidates:
+		v = v.strip()
+		if not v:
+			continue
+		letters.append(_normalize_answer_letter(v, num_options))
+	uniq_sorted = sorted(set(letters))
+	return "+".join(uniq_sorted) if uniq_sorted else "A"
+
+
 async def run_text_model(
 	model: str,
 	question: str,
@@ -110,7 +125,7 @@ async def run_text_model(
 	timeout_seconds: float = 30.0,
 ) -> ModelResponse:
 	prompt = _build_text_prompt(question, options, allow_multi=allow_multi)
-	payload = {"model": model, "prompt": prompt, "stream": False}
+	payload = {"model": model, "prompt": prompt, "stream": False, "options": OLLAMA_GEN_OPTIONS}
 	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
 		resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
 		resp.raise_for_status()
@@ -142,11 +157,12 @@ async def run_freeform_text(
 	timeout_seconds: float = 30.0,
 ) -> ModelResponse:
 	prompt = (
-		"You are an expert problem-solver. Answer the question concisely and return strict JSON.\n"
-		"Return only: {\"answer\": \"short text\", \"explanation\": \"two short lines\", \"confidence\": 0-1}.\n\n"
+		"You are an expert problem-solver for mathematics and programming."
+		" Think carefully but reply ONLY with a strict JSON object.\n"
+		"Return keys: answer (short text), explanation (2 short lines), confidence (0-1).\n\n"
 		f"Question: {question}\n"
 	)
-	payload = {"model": model, "prompt": prompt, "stream": False}
+	payload = {"model": model, "prompt": prompt, "stream": False, "options": OLLAMA_GEN_OPTIONS}
 	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
 		resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
 		resp.raise_for_status()
@@ -183,6 +199,7 @@ async def run_vlm_model(
 		"prompt": prompt,
 		"images": [image_base64],
 		"stream": False,
+		"options": OLLAMA_GEN_OPTIONS,
 	}
 	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
 		resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
@@ -286,7 +303,11 @@ async def run_two_phase(
 ) -> List[ModelResponse]:
 	"""Run primary duo (or single) first; if they disagree or force flag set, run tie-breaker."""
 	cfg = get_config()
-	selected = cfg.primary[:1] if cfg.mode == 'single' else cfg.primary[:2]
+	# Optimization: if no image is provided (text-only path), use the math/text model as primary
+	if image_base64 is None:
+		selected = [cfg.tiebreaker]
+	else:
+		selected = cfg.primary[:1] if cfg.mode == 'single' else cfg.primary[:2]
 	results: List[ModelResponse] = []
 	# Run primary in parallel
 	primary_tasks = [

@@ -13,7 +13,7 @@ from .schemas import MCQRequest, FreeformRequest
 from .models import run_three_models_for_text, run_two_text_plus_vlm, run_freeform_text, run_two_phase
 from .aggregator import aggregate_majority
 from .config import get_config, update_config
-from .ocr import image_to_text_lines, parse_mcq_from_lines
+from .ocr import image_to_text_lines, parse_mcq_from_lines, preprocess_remove_watermark, ocr_quality_score
 
 
 app = FastAPI(title="HelperAI Ensemble MCQ")
@@ -157,12 +157,26 @@ async def answer_text(req: MCQRequest):
 
 
 @app.post("/api/answer_image")
-async def answer_image(image: UploadFile = File(...), multi: Optional[bool] = Form(False)):
+async def answer_image(image: UploadFile = File(...), multi: Optional[bool] = Form(False), remove_watermark: Optional[bool] = Form(False), text_first: Optional[bool] = Form(False)):
 	data = await image.read()
 	image_b64 = base64.b64encode(data).decode("utf-8")
+	if remove_watermark:
+		try:
+			image_b64 = preprocess_remove_watermark(image_b64)
+		except Exception:
+			pass
 	lines = image_to_text_lines(image_b64)
 	question, options = parse_mcq_from_lines(lines)
-	responses = await run_two_phase(question, options, image_b64, allow_multi=bool(multi))
+	# Text-first path for clean text screenshots
+	if text_first:
+		quality = ocr_quality_score(lines)
+		enough_options = bool(options and len(options) >= 2)
+		if quality >= 40 and enough_options:
+			responses = await run_two_phase(question, options, None, allow_multi=bool(multi))
+		else:
+			responses = await run_two_phase(question, options, image_b64, allow_multi=bool(multi))
+	else:
+		responses = await run_two_phase(question, options, image_b64, allow_multi=bool(multi))
 	from .aggregator import aggregate_majority_multi
 	agg = aggregate_majority_multi(responses) if multi else aggregate_majority(responses)
 	return JSONResponse({
@@ -283,7 +297,11 @@ MOBILE_HTML = """
       const fd = new FormData();
       fd.append('image', file);
       const multi = document.getElementById('multi').checked;
+      const rmwm = document.getElementById('rmwm') ? document.getElementById('rmwm').checked : false;
+      const txtfirst = document.getElementById('txtfirst') ? document.getElementById('txtfirst').checked : false;
       fd.append('multi', multi ? 'true' : 'false');
+      fd.append('remove_watermark', rmwm ? 'true' : 'false');
+      fd.append('text_first', txtfirst ? 'true' : 'false');
       const out = document.getElementById('out');
       const explain = document.getElementById('explain');
       out.textContent = 'Thinking...';
@@ -316,6 +334,8 @@ MOBILE_HTML = """
     <div class=\"row\">
       <input id=\"img\" type=\"file\" accept=\"image/*\" capture=\"environment\" />
       <label class=\"row\"><input id=\"multi\" type=\"checkbox\"/> Multiple correct</label>
+      <label class=\"row\"><input id=\"rmwm\" type=\"checkbox\"/> Remove watermark</label>
+      <label class=\"row\"><input id=\"txtfirst\" type=\"checkbox\"/> Text-first</label>
       <button class=\"btn\" onclick=\"sendImage(event)\">Submit</button>
       <button class=\"btn\" onclick=\"startAutoRefresh()\">Auto-refresh 15s</button>
     </div>
