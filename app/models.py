@@ -125,7 +125,10 @@ async def run_text_model(
 	timeout_seconds: float = 30.0,
 ) -> ModelResponse:
 	prompt = _build_text_prompt(question, options, allow_multi=allow_multi)
-	payload = {"model": model, "prompt": prompt, "stream": False, "options": OLLAMA_GEN_OPTIONS}
+	# Respect keep-alive from config to discourage residency when user wants low RAM
+	from .config import get_config
+	cfg = get_config()
+	payload = {"model": model, "prompt": prompt, "stream": False, "options": OLLAMA_GEN_OPTIONS, "keep_alive": cfg.keep_alive_primary}
 	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
 		resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
 		resp.raise_for_status()
@@ -162,7 +165,9 @@ async def run_freeform_text(
 		"Return keys: answer (short text), explanation (2 short lines), confidence (0-1).\n\n"
 		f"Question: {question}\n"
 	)
-	payload = {"model": model, "prompt": prompt, "stream": False, "options": OLLAMA_GEN_OPTIONS}
+	from .config import get_config
+	cfg = get_config()
+	payload = {"model": model, "prompt": prompt, "stream": False, "options": OLLAMA_GEN_OPTIONS, "keep_alive": cfg.keep_alive_primary}
 	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
 		resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
 		resp.raise_for_status()
@@ -194,12 +199,15 @@ async def run_vlm_model(
 	timeout_seconds: float = 45.0,
 ) -> ModelResponse:
 	prompt = _build_vlm_prompt(question, options, allow_multi=allow_multi)
+	from .config import get_config
+	cfg = get_config()
 	payload = {
 		"model": model,
 		"prompt": prompt,
 		"images": [image_base64],
 		"stream": False,
 		"options": OLLAMA_GEN_OPTIONS,
+		"keep_alive": cfg.keep_alive_primary,
 	}
 	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
 		resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
@@ -346,7 +354,12 @@ async def run_two_phase(
 		q = question or "Answer the question from the provided information."
 		opts = options or ["Option A", "Option B", "Option C", "Option D"]
 		try:
+			# Use shorter keep-alive to free RAM quickly after use
+			old_primary = cfg.keep_alive_primary
+			from .config import update_config
+			update_config({"keep_alive_primary": cfg.keep_alive_tiebreaker})
 			breaker_res = await run_text_model(cfg.tiebreaker, q, opts, allow_multi=allow_multi)
+			update_config({"keep_alive_primary": old_primary})
 			results.append(breaker_res)
 		except Exception as e:
 			results.append(

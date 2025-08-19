@@ -189,7 +189,7 @@ async def answer_image(image: UploadFile = File(...), multi: Optional[bool] = Fo
 @app.post("/api/answer_freeform")
 async def answer_freeform(req: FreeformRequest):
 	# Use a single preloaded local model (qwen2:7b by default)
-	resp = await run_freeform_text("qwen2:7b", req.question)
+	resp = await run_freeform_text("qwen2.5-math:7b-instruct", req.question)
 	return JSONResponse({
 		"final_answer": resp.answer,
 		"explanation": resp.explanation,

@@ -1,19 +1,21 @@
 HelperAI MCQ Ensemble (Local + Offline, LAN-accessible)
 ======================================================
 
-A FastAPI web app to answer multiple-choice questions using multiple local AI models via Ollama. It is optimized for single-correct MCQs (4 options), supports image-based questions, runs fully offline after setup, and is controllable from your phone over LAN.
+A FastAPI web app to answer multiple-choice questions using local AI models via Ollama. It is optimized for single-correct MCQs (4 options), supports image-based questions, runs fully offline after setup, and is controllable from your phone over LAN.
 
 Key capabilities
 ----------------
 
-- Phase-based ensemble (2+1):
-  - Phase 1 (always-loaded duo): `qwen2.5-vl:7b-instruct`, `llama3.2-vision:11b-instruct`
-  - Phase 2 (on-demand tie-breaker): `qwen2.5-math:7b-instruct`
-  - Typical latency: 7–9 s (Phase 1 agrees); 12–15 s with tie-breaker
+- Phase-based ensemble (configurable 2+1):
+  - Phase 1 (primaries for image path): `qwen2.5-vl:7b-instruct`, `llama3.2-vision:11b-instruct`
+  - Default mode is `single`, which runs only the first primary for image questions; switch to `duo` to use both.
+  - Phase 2 (on-demand tie-breaker): `qwen2.5-math:7b-instruct` (text model) runs only when needed.
+  - Text MCQ path uses only the tie-breaker model by design (fast, decisive).
+  - Freeform (no options) uses the same text model by default: `qwen2.5-math:7b-instruct`.
 - Image pipeline with text-first optimization:
   - Optional watermark removal (OpenCV) emphasizing dark text, suppressing gray watermarks
   - OCR (PaddleOCR) parses question/options
-  - Text-first switch: if OCR is good, answer with text model(s) first; otherwise fall back to VLMs
+  - Text-first switch: if OCR is good and options are detected, answer with the text tie-breaker only; otherwise include the image and use VLMs
 - Single-correct and multi-answer support:
   - Single-correct is default and fastest
   - Multi-answer toggle on mobile for questions that require multiple letters (e.g., "A+C")
@@ -47,19 +49,22 @@ Hardware target & models
 Installation
 ------------
 
-1) Clone and enter the repo
+1. Clone and enter the repo
+
 ```powershell
 cd HelperAI
 ```
 
-2) Install and pull models (Ollama)
+1. Install and pull models (Ollama)
+
 ```powershell
 ollama pull qwen2.5-vl:7b-instruct
 ollama pull llama3.2-vision:11b-instruct
 ollama pull qwen2.5-math:7b-instruct
 ```
 
-3) Create a virtual environment and install Python deps
+1. Create a virtual environment and install Python deps
+
 ```powershell
 python -m venv .venv
 . .\.venv\Scripts\Activate.ps1
@@ -104,6 +109,7 @@ APIs
 ----
 
 - Text MCQ
+
 ```bash
 curl -X POST http://<server-ip>:8000/api/answer_text \
   -H "Content-Type: application/json" \
@@ -111,6 +117,7 @@ curl -X POST http://<server-ip>:8000/api/answer_text \
 ```
 
 - Image MCQ (with toggles)
+
 ```bash
 curl -X POST http://<server-ip>:8000/api/answer_image \
   -F image=@/path/to/screenshot.jpg \
@@ -120,20 +127,26 @@ curl -X POST http://<server-ip>:8000/api/answer_image \
 ```
 
 - Freeform (no options)
+
 ```bash
 curl -X POST http://<server-ip>:8000/api/answer_freeform \
   -H "Content-Type: application/json" \
   -d '{"question":"What is the derivative of x^2?"}'
 ```
 
+By default, this endpoint uses the local text model `qwen2.5-math:7b-instruct`.
+
 Runtime configuration
 ---------------------
 
 - Get config
+
 ```bash
 curl http://<server-ip>:8000/config
 ```
+
 - Update config (examples)
+
 ```bash
 # Switch to single-model mode
 curl -X POST http://<server-ip>:8000/config -H "Content-Type: application/json" -d '{"mode":"single"}'
@@ -142,6 +155,11 @@ curl -X POST http://<server-ip>:8000/config -H "Content-Type: application/json" 
 # Force next call to include tie-breaker (one-off)
 curl -X POST http://<server-ip>:8000/config -H "Content-Type: application/json" -d '{"force_tiebreaker": true}'
 ```
+
+Notes:
+
+- Text MCQ requests always use the tie-breaker model only (mode does not affect text path).
+- Image MCQ requests use primaries per `mode` (`single` runs the first primary; `duo` runs both). If primaries disagree in `duo`, the tie-breaker runs once.
 
 Warm/unload/status
 ------------------
@@ -158,10 +176,38 @@ curl http://<server-ip>:8000/status
 Performance notes
 -----------------
 
-- Dominant case (single-correct, 4 options): 7–9 s end-to-end (Phase 1 agrees)
-- Tie-breaker path: 12–15 s
-- Watermark removal preproc: +0.15–0.35 s, but can improve OCR and overall accuracy
-- Text-first (images): saves ~0.5–1.5 s on clean text screenshots
+- Actual latency depends on hardware, model quantization, and whether `single` or `duo` primaries are used for images.
+- Watermark removal adds preprocessing time but can improve OCR and overall accuracy.
+- Text-first (images) can be faster when OCR quality is good, since it uses only the text tie-breaker.
+
+Low-RAM setup (16–18 GB)
+------------------------
+
+- Keep mode as single to load only one VLM for images.
+- Use only `qwen2.5-vl:7b-instruct` as the primary; avoid `llama3.2-vision:11b-instruct`.
+- Keep the tie-breaker `qwen2.5-math:7b-instruct` on-demand (default behavior).
+- Set keep-alive to `"0"` so models unload ASAP after calls.
+- Prefer Text-first on images when OCR is good to skip VLM in many cases.
+- Use lower-ram quantizations (e.g., Q3_K_M or Q4_K_M) for both VLM and math models.
+
+Quick config (while server is running):
+
+```bash
+# single-model mode
+curl -X POST http://localhost:8000/config -H "Content-Type: application/json" -d '{"mode":"single"}'
+
+# use only qwen2.5-vl as the primary VLM
+curl -X POST http://localhost:8000/config -H "Content-Type: application/json" -d '{"primary":["qwen2.5-vl:7b-instruct"]}'
+
+# keep models from lingering in RAM
+curl -X POST http://localhost:8000/config -H "Content-Type: application/json" -d '{"keep_alive_primary":"0","keep_alive_tiebreaker":"0"}'
+```
+
+Expected usage:
+
+- Image question: ~6.5–9 GB (one VLM) with brief spikes.
+- If tie-breaker runs: +~5.5–7 GB momentarily; with light quantization and short contexts this generally stays within 16–18 GB.
+- Text questions: only the math model loads (~5.5–7 GB).
 
 Troubleshooting
 ---------------
@@ -174,4 +220,3 @@ License
 -------
 
 Local use with open models; check individual model licenses for redistribution/commercial use.
-
