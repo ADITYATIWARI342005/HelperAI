@@ -9,14 +9,13 @@ import socket
 import qrcode
 import psutil
 
-from .schemas import MCQRequest, FreeformRequest
-from .models import run_three_models_for_text, run_two_text_plus_vlm, run_freeform_text, run_two_phase
-from .aggregator import aggregate_majority
-from .config import get_config, update_config
-from .ocr import image_to_text_lines, parse_mcq_from_lines, preprocess_remove_watermark, ocr_quality_score
+from app.schemas import MCQRequest, FreeformRequest, MCQResponse, FreeformResponse
+from app.models import run_mcq_model, run_freeform_model, run_mcq_with_ocr
+from app.config import get_config
+from app.ocr import image_to_text_lines, parse_mcq_from_lines, preprocess_remove_watermark
 
 
-app = FastAPI(title="HelperAI Ensemble MCQ")
+app = FastAPI(title="HelperAI - DeepSeek R1 MCQ Solver")
 
 app.add_middleware(
 	CORSMiddleware,
@@ -33,7 +32,7 @@ INDEX_HTML = """
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>HelperAI MCQ Ensemble</title>
+  <title>HelperAI MCQ Solver</title>
   <style>
     body { font-family: system-ui, Arial, sans-serif; margin: 32px; color: #222; }
     .container { max-width: 920px; margin: 0 auto; }
@@ -46,9 +45,13 @@ INDEX_HTML = """
     .btn:disabled { background: #8fb5ff; }
     .muted { color: #666; font-size: 0.9rem; }
     .result { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-top: 12px; }
+    .correct { background: #e6ffe6; border-color: #22c55e; }
+    .status { padding: 8px; border-radius: 6px; margin: 8px 0; background: #e3f2fd; border: 1px solid #2196f3; }
   </style>
   <script>
     let ocrTimer = null;
+    let autoRefreshTimer = null;
+    
     async function submitText(event) {
       event.preventDefault();
       const q = document.getElementById('question').value;
@@ -58,6 +61,7 @@ INDEX_HTML = """
       const resp = await fetch('/api/answer_text', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question: q, options: opts})});
       const data = await resp.json();
       resBox.textContent = JSON.stringify(data, null, 2);
+      if (data && data.final_answer) { markCorrectInputs(data.final_answer); }
     }
 
     async function uploadImage(event) {
@@ -67,10 +71,11 @@ INDEX_HTML = """
       const fd = new FormData();
       fd.append('image', file);
       const resBox = document.getElementById('result');
-      resBox.textContent = 'Uploading and running OCR/VLM...';
+      resBox.textContent = 'Uploading and running OCR...';
       const resp = await fetch('/api/answer_image', {method:'POST', body: fd});
       const data = await resp.json();
       resBox.textContent = JSON.stringify(data, null, 2);
+      if (data && data.final_answer) { markCorrectInputs(data.final_answer); }
     }
 
     function scheduleOcr() {
@@ -82,6 +87,7 @@ INDEX_HTML = """
         fd.append('image', file);
         fetch('/api/answer_image', {method:'POST', body: fd}).then(r => r.json()).then(data => {
           document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+          if (data && data.final_answer) { markCorrectInputs(data.final_answer); }
         });
       }, 10000); // 10s delay per requirement
     }
@@ -94,12 +100,47 @@ INDEX_HTML = """
       const resp = await fetch('/api/answer_freeform', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question: q})});
       out.textContent = JSON.stringify(await resp.json(), null, 2);
     }
+
+    function markCorrectInputs(finalCombo) {
+      const parts = String(finalCombo||'').replace(/\\s+/g,'').split('+').filter(Boolean);
+      ['A','B','C','D'].forEach(l=>{
+        const input = document.getElementById('opt'+l);
+        if (input){ input.classList.remove('correct'); }
+      });
+      parts.forEach(l=>{
+        const input = document.getElementById('opt'+l);
+        if (input){ input.classList.add('correct'); }
+      });
+    }
+
+    function startAutoRefresh() {
+      if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+      autoRefreshTimer = setInterval(() => {
+        location.reload();
+      }, 45000); // 45 seconds as per requirement
+      document.getElementById('autoRefreshStatus').textContent = 'Auto-refresh enabled (45s)';
+    }
+
+    function stopAutoRefresh() {
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+      document.getElementById('autoRefreshStatus').textContent = 'Auto-refresh disabled';
+    }
   </script>
 </head>
 <body>
   <div class="container">
-    <h1>HelperAI MCQ Ensemble</h1>
-    <p class="muted">Runs three local models (two text, one VLM) via Ollama. Text input aggregates by majority vote with a two-line explanation. Image input runs OCR + VLM.</p>
+    <h1>HelperAI MCQ Solver</h1>
+    <p class="muted">Powered by DeepSeek R1:70B Llama Distill Q4_K_M model</p>
+    
+    <div class="status">
+      <strong>Model:</strong> deepseek-r1:70b-llama-distill-q4_K_M<br>
+      <strong>Auto-refresh:</strong> <span id="autoRefreshStatus">Disabled</span><br>
+      <button class="btn" onclick="startAutoRefresh()">Enable Auto-refresh</button>
+      <button class="btn" onclick="stopAutoRefresh()">Disable Auto-refresh</button>
+    </div>
 
     <div class="row">
       <div class="card">
@@ -108,20 +149,22 @@ INDEX_HTML = """
           <label>Question</label>
           <textarea id="question" rows="4" placeholder="Enter your question..."></textarea>
           <label>Options</label>
-          <input class="opt" type="text" placeholder="Option A"/>
-          <input class="opt" type="text" placeholder="Option B"/>
-          <input class="opt" type="text" placeholder="Option C"/>
-          <input class="opt" type="text" placeholder="Option D"/>
+          <div class="row">
+            <div><label>A</label><input class="opt" id="optA" type="text" placeholder="Option A"/></div>
+            <div><label>B</label><input class="opt" id="optB" type="text" placeholder="Option B"/></div>
+            <div><label>C</label><input class="opt" id="optC" type="text" placeholder="Option C"/></div>
+            <div><label>D</label><input class="opt" id="optD" type="text" placeholder="Option D"/></div>
+          </div>
           <div style="margin-top:10px;"><button class="btn" type="submit">Get Answer</button></div>
         </form>
       </div>
 
       <div class="card">
-        <h2>Image Input (OCR + VLM)</h2>
+        <h2>Image Input (OCR)</h2>
         <form onsubmit="uploadImage(event)">
           <input id="image" name="image" type="file" accept="image/*" onchange="scheduleOcr()"/>
           <div style="margin-top:10px;"><button class="btn" type="submit">Upload Now</button></div>
-          <p class="muted">If you don't click Upload, we'll auto-run OCR/VLM 10s after selecting an image.</p>
+          <p class="muted">If you don't click Upload, we'll auto-run OCR 10s after selecting an image.</p>
         </form>
       </div>
     </div>
@@ -130,6 +173,7 @@ INDEX_HTML = """
       <h2>Result</h2>
       <pre id="result" class="result"></pre>
     </div>
+
     <div class="card">
       <h2>Freeform Question (no options)</h2>
       <form onsubmit="submitFreeform(event)">
@@ -151,62 +195,66 @@ async def index() -> str:
 
 @app.post("/api/answer_text")
 async def answer_text(req: MCQRequest):
-	responses = await run_two_phase(req.question, req.options, None)
-	agg = aggregate_majority(responses)
-	return JSONResponse(agg.dict())
+	"""Handle text-based MCQ questions"""
+	response = await run_mcq_model(req.question, req.options)
+	return JSONResponse(MCQResponse(
+		final_answer=response.answer,
+		explanation=response.explanation,
+		confidence=response.confidence,
+		model=response.model_name,
+		per_model=[response]
+	).model_dump())
 
 
 @app.post("/api/answer_image")
-async def answer_image(image: UploadFile = File(...), multi: Optional[bool] = Form(False), remove_watermark: Optional[bool] = Form(False), text_first: Optional[bool] = Form(False)):
+async def answer_image(image: UploadFile = File(...), remove_watermark: Optional[bool] = Form(False)):
+	"""Handle image uploads - OCR to text then process with model"""
 	data = await image.read()
 	image_b64 = base64.b64encode(data).decode("utf-8")
+	
+	# Preprocess image to remove watermarks if requested
 	if remove_watermark:
 		try:
 			image_b64 = preprocess_remove_watermark(image_b64)
 		except Exception:
 			pass
+	
+	# Extract text using OCR
 	lines = image_to_text_lines(image_b64)
 	question, options = parse_mcq_from_lines(lines)
-	# Text-first path for clean text screenshots
-	if text_first:
-		quality = ocr_quality_score(lines)
-		enough_options = bool(options and len(options) >= 2)
-		if quality >= 40 and enough_options:
-			responses = await run_two_phase(question, options, None, allow_multi=bool(multi))
-		else:
-			responses = await run_two_phase(question, options, image_b64, allow_multi=bool(multi))
-	else:
-		responses = await run_two_phase(question, options, image_b64, allow_multi=bool(multi))
-	from .aggregator import aggregate_majority_multi
-	agg = aggregate_majority_multi(responses) if multi else aggregate_majority(responses)
+	
+	# Run the model with OCR-extracted text
+	response = await run_mcq_with_ocr(question, options)
+	
 	return JSONResponse({
 		"question": question,
 		"options": options,
-		"result": agg.dict(),
+		"result": MCQResponse(
+			final_answer=response.answer,
+			explanation=response.explanation,
+			confidence=response.confidence,
+			model=response.model_name,
+			per_model=[response]
+		).model_dump()
 	})
 
 
 @app.post("/api/answer_freeform")
 async def answer_freeform(req: FreeformRequest):
-	# Use a single preloaded local model (qwen2:7b by default)
-	resp = await run_freeform_text("qwen2.5-math:7b-instruct", req.question)
-	return JSONResponse({
-		"final_answer": resp.answer,
-		"explanation": resp.explanation,
-		"confidence": resp.confidence,
-		"model": resp.model_name,
-	})
+	"""Handle freeform questions with detailed thought process"""
+	response = await run_freeform_model(req.question)
+	return JSONResponse(FreeformResponse(
+		final_answer=response.answer,
+		explanation=response.explanation,
+		thought_process=response.thought_process or "",
+		confidence=response.confidence,
+		model=response.model_name
+	).model_dump())
 
 
 @app.get("/config")
 async def get_runtime_config():
 	cfg = get_config()
-	return JSONResponse(cfg.model_dump())
-
-
-@app.post("/config")
-async def update_runtime_config(body: dict = Body(...)):
-	cfg = update_config(body)
 	return JSONResponse(cfg.model_dump())
 
 
@@ -224,45 +272,37 @@ async def status():
 	})
 
 
-@app.post("/warm_math")
-async def warm_math():
-	# Do a tiny prompt to ensure model is loaded into memory
-	try:
-		from .models import run_text_model
-		_ = await run_text_model(get_config().tiebreaker, "Warmup: choose A", ["A","B"])  # ignore result
-		return JSONResponse({"status": "ok", "message": "math warmed"})
-	except Exception as e:
-		return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
-
-
-@app.post("/unload_math")
-async def unload_math():
-	# Ollama has no explicit unload; hint GC by switching context. We return ack.
-	return JSONResponse({"status": "ok", "message": "request acknowledged (llama.cpp will evict on memory pressure)"})
-
-
 MOBILE_HTML = """
 <!doctype html>
 <html>
 <head>
   <meta charset=\"utf-8\"/>
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>
-  <title>HelperAI Mobile Upload</title>
+  <title>HelperAI MCQ Solver - Mobile</title>
   <style>
     body { font-family: system-ui, Arial, sans-serif; margin: 20px; color: #222; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; }
-    .btn { background: #0d6efd; color: white; border: none; padding: 10px 14px; border-radius: 8px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin-bottom: 16px; }
+    .btn { background: #0d6efd; color: white; border: none; padding: 10px 14px; border-radius: 8px; margin: 4px; }
+    .btn.secondary { background: #6c757d; }
+    .btn.success { background: #198754; }
     pre { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; }
-    .row { display:flex; gap:10px; align-items:center; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
     .opts { margin-top: 10px; }
     .opt { padding: 8px; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom:6px; }
     .opt.correct { background: #e6ffe6; border-color: #22c55e; }
     .muted { color:#666; font-size: 0.9rem; }
+    .status { padding: 8px; border-radius: 6px; margin: 8px 0; background: #e3f2fd; border: 1px solid #2196f3; }
+    .camera-controls { display: flex; flex-direction: column; gap: 10px; }
+    .processing-options { display: flex; flex-direction: column; gap: 8px; }
+    .camera-controls .btn { font-size: 1.1rem; padding: 12px 16px; }
+    #preview-container { text-align: center; }
+    #image-preview { border: 2px solid #e5e7eb; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .auto-refresh { padding: 8px; border-radius: 6px; margin: 8px 0; background: #fff3e0; border: 1px solid #ff9800; }
   </style>
   <script>
     let lastFile = null;
-    let refreshTimer = null;
-
+    let autoRefreshTimer = null;
+    
     function letters(n){ return Array.from({length:n}, (_,i)=>String.fromCharCode(65+i)); }
 
     function renderParsed(q, opts){
@@ -281,7 +321,7 @@ MOBILE_HTML = """
     }
 
     function markCorrect(finalCombo){
-      const parts = String(finalCombo||'').replace(/\s+/g,'').split('+').filter(Boolean);
+      const parts = String(finalCombo||'').replace(/\\s+/g,'').split('+').filter(Boolean);
       document.querySelectorAll('.opt').forEach(el=>el.classList.remove('correct'));
       parts.forEach(p=>{
         const el = document.getElementById('opt_'+p);
@@ -296,15 +336,11 @@ MOBILE_HTML = """
       lastFile = file;
       const fd = new FormData();
       fd.append('image', file);
-      const multi = document.getElementById('multi').checked;
       const rmwm = document.getElementById('rmwm') ? document.getElementById('rmwm').checked : false;
-      const txtfirst = document.getElementById('txtfirst') ? document.getElementById('txtfirst').checked : false;
-      fd.append('multi', multi ? 'true' : 'false');
       fd.append('remove_watermark', rmwm ? 'true' : 'false');
-      fd.append('text_first', txtfirst ? 'true' : 'false');
       const out = document.getElementById('out');
       const explain = document.getElementById('explain');
-      out.textContent = 'Thinking...';
+      out.textContent = 'Processing...';
       explain.textContent = '';
       const resp = await fetch('/api/answer_image', { method: 'POST', body: fd });
       const data = await resp.json();
@@ -319,25 +355,103 @@ MOBILE_HTML = """
     }
 
     function startAutoRefresh(){
-      if (refreshTimer) clearInterval(refreshTimer);
-      refreshTimer = setInterval(()=>{
-        if (lastFile) {
-          sendImage(null);
-        }
-      }, 15000);
+      if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+      autoRefreshTimer = setInterval(()=>{
+        location.reload();
+      }, 45000); // 45 seconds as per requirement
+      document.getElementById('autoRefreshStatus').textContent = 'Auto-refresh enabled (45s)';
     }
+
+    function stopAutoRefresh(){
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+      document.getElementById('autoRefreshStatus').textContent = 'Auto-refresh disabled';
+    }
+
+    // Camera and image handling functions
+    function openGallery() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = function(e) {
+        const file = e.target.files[0];
+        if (file) {
+          handleImageSelection(file);
+        }
+      };
+      input.click();
+    }
+
+    function handleImageSelection(file) {
+      lastFile = file;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const preview = document.getElementById('image-preview');
+        const container = document.getElementById('preview-container');
+        preview.src = e.target.result;
+        container.style.display = 'block';
+        
+        // Auto-process after 2 seconds
+        setTimeout(() => {
+          if (lastFile === file) {
+            sendImage(null);
+          }
+        }, 2000);
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function clearImage() {
+      lastFile = null;
+      document.getElementById('preview-container').style.display = 'none';
+      document.getElementById('img').value = '';
+    }
+
+    // Enhanced image input handling
+    document.addEventListener('DOMContentLoaded', function() {
+      const imgInput = document.getElementById('img');
+      imgInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) {
+          handleImageSelection(file);
+        }
+      });
+    });
   </script>
 </head>
 <body>
   <div class=\"card\">
-    <h2>Upload MCQ Screenshot</h2>
+    <h2>HelperAI MCQ Solver</h2>
+    <div class=\"status\">
+      <strong>Model:</strong> deepseek-r1:70b-llama-distill-q4_K_M<br>
+      <strong>Mode:</strong> Text-only (OCR + Model)
+    </div>
+    
+    <div class=\"auto-refresh\">
+      <strong>Auto-refresh:</strong> <span id=\"autoRefreshStatus\">Disabled</span><br>
+      <button class=\"btn\" onclick=\"startAutoRefresh()\">Enable Auto-refresh</button>
+      <button class=\"btn secondary\" onclick=\"stopAutoRefresh()\">Disable Auto-refresh</button>
+    </div>
+  </div>
+
+  <div class=\"card\">
+    <h2>Capture MCQ Screenshot</h2>
     <div class=\"row\">
-      <input id=\"img\" type=\"file\" accept=\"image/*\" capture=\"environment\" />
-      <label class=\"row\"><input id=\"multi\" type=\"checkbox\"/> Multiple correct</label>
-      <label class=\"row\"><input id=\"rmwm\" type=\"checkbox\"/> Remove watermark</label>
-      <label class=\"row\"><input id=\"txtfirst\" type=\"checkbox\"/> Text-first</label>
-      <button class=\"btn\" onclick=\"sendImage(event)\">Submit</button>
-      <button class=\"btn\" onclick=\"startAutoRefresh()\">Auto-refresh 15s</button>
+      <div class=\"camera-controls\">
+        <input id=\"img\" type=\"file\" accept=\"image/*\" capture=\"environment\" style=\"display: none;\" />
+        <button class=\"btn\" onclick=\"document.getElementById('img').click()\">📷 Open Camera</button>
+        <button class=\"btn secondary\" onclick=\"openGallery()\">📁 Gallery</button>
+        <div id=\"preview-container\" style=\"display: none; margin-top: 10px;\">
+          <img id=\"image-preview\" style=\"max-width: 100%; max-height: 200px; border-radius: 8px;\" />
+          <button class=\"btn secondary\" onclick=\"clearImage()\" style=\"margin-top: 5px;\">🗑️ Clear</button>
+        </div>
+      </div>
+      <div class=\"processing-options\">
+        <label class=\"row\"><input id=\"rmwm\" type=\"checkbox\"/> Remove watermark</label>
+        <button class=\"btn success\" onclick=\"sendImage(event)\">Submit</button>
+      </div>
     </div>
     <div class=\"muted\">Parsed question (from OCR):</div>
     <div id=\"parsedq\" class=\"opt\"></div>
