@@ -2,3 +2,4 @@
 [2025-09-01 18:56:59] The most damaging phrase in the language is 'We've always done it this way!' - Grace Hopper
 [2025-09-01 14:20:08] Good code is its own best documentation. - Steve McConnell
 [2025-09-01 14:52:24] It's not a bug – it's an undocumented feature. - Anonymous
+[2025-09-01 16:46:02] Code is like humor. When you have to explain it, it's bad. - Cory House
