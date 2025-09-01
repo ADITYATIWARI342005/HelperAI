@@ -1,12 +1,12 @@
 {
   "enabled": true,
   "update_types": ["log", "stats", "quote"],
-  "max_changes_per_run": 5,
+  "max_changes_per_run": 3,
   "schedule": {
     "frequency": "multiple_daily",
-    "commits_per_day_min": 8,
-    "commits_per_day_max": 18,
-    "description": "8-18 commits daily with random variance"
+    "commits_per_day_min": 4,
+    "commits_per_day_max": 26,
+    "description": "4-26 commits daily with random variance"
   },
   "commit_settings": {
     "randomize_timing": true,

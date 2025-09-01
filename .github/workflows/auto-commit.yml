@@ -2,7 +2,7 @@ name: Auto Commit Activity
 
 on:
   schedule:
-    # Multiple times throughout the day for 8-18 commits daily with random variance
+    # Multiple times throughout the day for 4-26 commits daily with random variance
     - cron: '0 1 * * *'    # 1:00 AM UTC
     - cron: '30 3 * * *'   # 3:30 AM UTC
     - cron: '15 6 * * *'   # 6:15 AM UTC
@@ -32,11 +32,20 @@ jobs:
         git config --local user.email "adityatiwari342005@gmail.com"
         git config --local user.name "ADITYATIWARI342005"
     - name: Run update
-      run: python scripts/update_activity.py
-    - name: Commit changes
+      run: python .github/scripts/update_activity.py
+    - name: Check for changes
+      id: check_changes
       run: |
         git add .
-        if ! git diff --cached --quiet; then
-          git commit -m "$(python scripts/generate_commit_message.py)"
-          git push
+        if git diff --cached --quiet; then
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+          echo "No changes to commit"
+        else
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "Changes detected, will commit"
         fi
+    - name: Commit changes
+      if: steps.check_changes.outputs.has_changes == 'true'
+      run: |
+        git commit -m "$(python .github/scripts/generate_commit_message.py)"
+        git push
