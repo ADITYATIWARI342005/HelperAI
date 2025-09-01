@@ -1,0 +1,58 @@
+name: Auto Commit Activity
+
+on:
+  schedule:
+    # Multiple times throughout the day for 3-8 commits daily with random variance
+    - cron: '15 2 * * *'   # 2:15 AM UTC
+    - cron: '45 6 * * *'   # 6:45 AM UTC  
+    - cron: '30 10 * * *'  # 10:30 AM UTC
+    - cron: '15 14 * * *'  # 2:15 PM UTC
+    - cron: '45 17 * * *'  # 5:45 PM UTC
+    - cron: '30 20 * * *'  # 8:30 PM UTC
+    - cron: '15 23 * * *'  # 11:15 PM UTC
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  auto-commit:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Configure Git
+      run: |
+        git config --local user.email "adityatiwari342005@gmail.com"
+        git config --local user.name "ADITYATIWARI342005"
+
+    - name: Run update script
+      run: python scripts/update_activity.py
+
+    - name: Check for changes
+      id: verify-changed-files
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Commit and push changes
+      if: steps.verify-changed-files.outputs.changed == 'true'
+      run: |
+        git add .
+        git commit -m "$(python scripts/generate_commit_message.py)"
+        git push
+
+    - name: Log activity
+      run: |
+        echo "Auto-commit workflow completed at $(date)"
+        echo "Changes detected: ${{ steps.verify-changed-files.outputs.changed }}"
