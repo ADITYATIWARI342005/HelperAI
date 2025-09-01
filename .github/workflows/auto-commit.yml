@@ -23,7 +23,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        token: ${{ secrets.PAT_TOKEN }}  # Use Personal Access Token for proper attribution
+        token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}  # Use Personal Access Token for proper attribution
     - uses: actions/setup-python@v4
       with:
         python-version: '3.x'
