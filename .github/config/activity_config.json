@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "update_types": ["log", "stats", "quote"],
+  "max_changes_per_run": 5,
+  "schedule": {
+    "frequency": "multiple_daily",
+    "commits_per_day_min": 8,
+    "commits_per_day_max": 18,
+    "description": "8-18 commits daily with random variance"
+  },
+  "commit_settings": {
+    "randomize_timing": true,
+    "randomize_content": true,
+    "spread_throughout_day": true
+  },
+  "maintenance": {
+    "cleanup_old_logs": true,
+    "max_log_entries": 365
+  }
+}
