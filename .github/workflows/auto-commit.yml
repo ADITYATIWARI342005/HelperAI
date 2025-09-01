@@ -32,6 +32,12 @@ jobs:
         # Use your GitHub email to ensure commits count on your profile
         git config --local user.email "adityatiwari342005@gmail.com"
         git config --local user.name "ADITYATIWARI342005"
+        # Debug: Show current branch and configuration
+        echo "=== Git Configuration ==="
+        echo "Current Branch: $(git branch --show-current)"
+        echo "User Name: $(git config --local user.name)"
+        echo "User Email: $(git config --local user.email)"
+        echo "Remote URL: $(git remote get-url origin)"
     - name: Run update
       run: python .github/scripts/update_activity.py
     - name: Check for changes
@@ -48,5 +54,20 @@ jobs:
     - name: Commit changes
       if: steps.check_changes.outputs.has_changes == 'true'
       run: |
+        # Verify we're on the correct branch for contribution graph
+        CURRENT_BRANCH=$(git branch --show-current)
+        echo "Committing to branch: $CURRENT_BRANCH"
+        if [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
+          echo "⚠️  WARNING: Not on default branch. Commits may not count toward contribution graph."
+        else
+          echo "✅ Committing to default branch. Commits will count toward contribution graph."
+        fi
+        
         git commit -m "$(python .github/scripts/generate_commit_message.py)"
         git push
+        
+        # Show commit details
+        echo "=== Latest Commit ==="
+        git log --oneline -1 --pretty=format:"%h - %an <%ae> - %s"
+
+        
