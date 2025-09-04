@@ -22,3 +22,4 @@
 [2025-09-04 10:39:56] The only constant in the technology industry is change. - Marc Benioff
 [2025-09-04 12:54:34] Sometimes it pays to stay in bed on Monday, rather than spending the rest of the week debugging Monday's code. - Dan Salomon
 [2025-09-04 14:52:54] It's not a bug – it's an undocumented feature. - Anonymous
+[2025-09-04 18:39:54] Code is like humor. When you have to explain it, it's bad. - Cory House
