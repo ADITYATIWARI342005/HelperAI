@@ -77,3 +77,4 @@
 [2025-09-14 14:52:43] Simplicity is the ultimate sophistication. - Leonardo da Vinci
 [2025-09-14 20:52:56] It's not a bug – it's an undocumented feature. - Anonymous
 [2025-09-15 02:06:59] Code is like humor. When you have to explain it, it's bad. - Cory House
+[2025-09-15 12:58:02] The only way to learn a new programming language is by writing programs in it. - Dennis Ritchie
