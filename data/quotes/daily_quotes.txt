@@ -100,3 +100,4 @@
 [2025-09-18 14:53:03] First, solve the problem. Then, write the code. - John Johnson
 [2025-09-18 16:45:41] Any fool can write code that a computer can understand. Good programmers write code that humans can understand. - Martin Fowler
 [2025-09-18 18:42:06] The best error message is the one that never shows up. - Thomas Fuchs
+[2025-09-19 02:20:54] The only way to learn a new programming language is by writing programs in it. - Dennis Ritchie
