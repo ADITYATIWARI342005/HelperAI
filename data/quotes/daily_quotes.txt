@@ -101,3 +101,4 @@
 [2025-09-18 16:45:41] Any fool can write code that a computer can understand. Good programmers write code that humans can understand. - Martin Fowler
 [2025-09-18 18:42:06] The best error message is the one that never shows up. - Thomas Fuchs
 [2025-09-19 02:20:54] The only way to learn a new programming language is by writing programs in it. - Dennis Ritchie
+[2025-09-19 08:51:38] Sometimes it pays to stay in bed on Monday, rather than spending the rest of the week debugging Monday's code. - Dan Salomon
