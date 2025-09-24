@@ -2,7 +2,6 @@
 
 # on:
 #   schedule:
-#     # Multiple times throughout the day for 4-26 commits daily with random variance
 #     - cron: '0 1 * * *'    # 1:00 AM UTC
 #     - cron: '30 3 * * *'   # 3:30 AM UTC
 #     - cron: '15 6 * * *'   # 6:15 AM UTC
